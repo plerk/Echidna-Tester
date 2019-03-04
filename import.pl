@@ -8,6 +8,7 @@ use Path::Tiny qw( path );
 use HTTP::Tiny;
 use YAML::XS qw( Load Dump DumpFile );
 use Mojo::DOM58;
+use DBI;
 
 my $mcpan = MetaCPAN::Client->new;
 
@@ -21,10 +22,10 @@ my $spec = $mcpan->release({
 my @dist_list;
 while(my $item = $spec->next)
 {
-  push @dist_list, $item->distribution;
+  push @dist_list, [ $item->distribution, $item->version ];
 }
 
-@dist_list = sort @dist_list;
+@dist_list = sort { $a->[0] cmp $b->[0] } @dist_list;
 
 sub get
 {
@@ -55,29 +56,97 @@ sub get
   die "failed fetch 10x";
 }
 
-foreach my $dist (@dist_list)
+sub insert
 {
+  my(%meta) = @_;
+
+  state $dbh;
+  state $insert;
+  state $columns = [qw(
+    guid
+    csspatch
+    cssperl
+    dist
+    distribution
+    distversion
+    fulldate
+    id
+    osname
+    ostext
+    osvers
+    perl
+    platform
+    postdate
+    state
+    status
+    tester
+    type
+    uploadid
+    version
+  )];
+
+  unless($dbh)
+  {
+    my $dbh = DBI->connect("dbi:SQLite:dbname=db/meta.sqlite", "", "");
+
+
+    $dbh->do(qq{
+      CREATE TABLE IF NOT EXISTS report (
+        guid PRIMARY KEY, @{[ join ', ', grep !/^guid$/, @$columns ]}
+      )
+    });
+
+    $insert = $dbh->prepare(qq{
+      INSERT OR IGNORE INTO report
+        (@{[ join ', ', @$columns ]})
+      VALUES
+        (@{[ join ', ', map { '?' } @$columns ]})
+    });
+  }
+
+  my $guid = $meta{guid};
+  my @values = map { delete $meta{$_} } @$columns;
+
+  if(%meta)
+  {
+    print Dump(\%meta);
+    die "extra keys in report $guid";
+  }
+
+  $insert->execute(@values);
+}
+
+foreach my $d (@dist_list)
+{
+  my($dist, $version) = @$d;
   my $res = get("https://www.cpantesters.org/distro/@{[ substr $dist, 0, 1 ]}/$dist.yml");
 
-  path("yml/$dist.yml")->spew_utf8($res->{content});
+  path("db/yml")->mkpath;
+  path("db/yml/$dist.yml")->spew_utf8($res->{content});
 
   my $list = Load($res->{content});
   foreach my $entry (@$list)
   {
+    next unless $entry->{version} eq $version;
     my $guid = $entry->{guid};
-    my $report_path = path('report')
+
+    insert(%$entry);
+
+    my $report_path = path('db/report')
                         ->child(substr($guid, 0,2))
                         ->child(substr($guid, 2,2))
                         ->child($guid);
     next if -f $report_path;
 
     $report_path->parent->mkpath;
-        
+
     my $res = get("https://www.cpantesters.org/cpan/report/@{[ $entry->{guid} ]}");
 
     my $text = Mojo::DOM58
       ->new($res->{content})->find('pre')->first->all_text;
-    
+
     $report_path->spew_utf8($text);
   }
 }
+
+
