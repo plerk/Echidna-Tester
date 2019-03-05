@@ -32,7 +32,7 @@ sub get
   my($url) = @_;
   state $http;
   $http ||= HTTP::Tiny->new;
-  for(1..10)
+  foreach my $try (1..10)
   {
     print "GET $url ";
     my $res = $http->get($url);
@@ -45,12 +45,21 @@ sub get
     {
       if($res->{status} == 599)
       {
-        print "@{[ $res->{status} ]} @{[ $res->{content} ]}\n";
+        my $reason = $res->{content};
+        chomp $reason;
+        print "@{[ $res->{status} ]} @{[ $reason ]}\n";
       }
       else
       {
         print "@{[ $res->{status} ]} @{[ $res->{reason} ]}\n";
       }
+      print "sleep ";
+      for(1..$try)
+      {
+        sleep 1;
+        print ".";
+      }
+      print "\n";
     }
   }
   die "failed fetch 10x";
@@ -83,6 +92,7 @@ sub insert
     type
     uploadid
     version
+    cssrelease
   )];
 
   unless($dbh)
@@ -121,16 +131,17 @@ foreach my $d (@dist_list)
   my($dist, $version) = @$d;
   my $res = get("https://www.cpantesters.org/distro/@{[ substr $dist, 0, 1 ]}/$dist.yml");
 
-  path("db/yml")->mkpath;
-  path("db/yml/$dist.yml")->spew_utf8($res->{content});
+  #path("db/yml")->mkpath;
+  #path("db/yml/$dist.yml")->spew_utf8($res->{content});
 
   my $list = Load($res->{content});
   foreach my $entry (@$list)
   {
-    next unless $entry->{version} eq $version;
     my $guid = $entry->{guid};
 
     insert(%$entry);
+
+    #next unless $entry->{version} eq $version;
 
     my $report_path = path('db/report')
                         ->child(substr($guid, 0,2))
@@ -148,5 +159,3 @@ foreach my $d (@dist_list)
     $report_path->spew_utf8($text);
   }
 }
-
-
